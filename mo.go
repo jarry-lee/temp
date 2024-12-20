@@ -2,228 +2,243 @@ package main
 
 import (
 	"bufio"
-	"bytes"
+	"encoding/binary"
 	"fmt"
-	"io"
 	"log"
 	"math"
+	"math/cmplx"
 	"os"
 )
 
-// 8PSK 심볼 매핑
-var symbolTable = []complex128{
-	1 + 0i,                      // 000
-	0.707 + 0.707i,              // 001
-	0 + 1i,                      // 010
-	-0.707 + 0.707i,             // 011
-	-1 + 0i,                     // 100
-	-0.707 - 0.707i,             // 101
-	0 - 1i,                      // 110
-	0.707 - 0.707i,              // 111
+// WAV 헤더 구조체
+type WAVHeader struct {
+	ChunkID       [4]byte
+	ChunkSize     uint32
+	Format        [4]byte
+	Subchunk1ID   [4]byte
+	Subchunk1Size uint32
+	AudioFormat   uint16
+	NumChannels   uint16
+	SampleRate    uint32
+	ByteRate      uint32
+	BlockAlign    uint16
+	BitsPerSample uint16
+	Subchunk2ID   [4]byte
+	Subchunk2Size uint32
 }
 
-// 인코딩: 3비트를 8PSK 심볼로 변환
-func encode8PSK(input []byte) []complex128 {
-	var encoded []complex128
-	for _, b := range input {
-		for i := 0; i < 8; i += 3 { // 3비트씩 처리
-			idx := (b >> (5 - i)) & 0x07 // 상위 3비트 추출
-			encoded = append(encoded, symbolTable[idx])
+// 8PSK 심볼 매핑 테이블
+var phaseTable = []complex128{
+	1 + 0i,           // 000
+	0.707 + 0.707i,   // 001
+	0 + 1i,           // 010
+	-0.707 + 0.707i,  // 011
+	-1 + 0i,          // 100
+	-0.707 - 0.707i,  // 101
+	0 - 1i,           // 110
+	0.707 - 0.707i,   // 111
+}
+
+// 바이너리 데이터를 8PSK 심볼로 변환
+func binaryToSymbols(data []byte) []complex128 {
+	var symbols []complex128
+	for _, b := range data {
+		for i := 0; i < 8; i += 3 {
+			index := (b >> (5 - i)) & 0b111 // 3비트 추출
+			symbols = append(symbols, phaseTable[index])
 		}
 	}
-	return encoded
+	return symbols
 }
 
-// 디코딩: 8PSK 심볼을 3비트 데이터로 변환
-func decode8PSK(encoded []complex128) []byte {
-	var decoded []byte
+// 8PSK 심볼을 PCM 샘플로 변환
+func symbolsToSamples(symbols []complex128, sampleRate int, toneFrequency float64, duration float64) []float64 {
+	var samples []float64
+	samplesPerSymbol := int(float64(sampleRate) * duration)
+
+	for _, symbol := range symbols {
+		phase := cmplx.Phase(symbol)
+		for i := 0; i < samplesPerSymbol; i++ {
+			t := float64(i) / float64(sampleRate)
+			sample := math.Sin(2*math.Pi*toneFrequency + phase)
+			samples = append(samples, sample)
+		}
+	}
+	return samples
+}
+
+// WAV 파일 생성
+func createWAVFile(filePath string, sampleRate int, samples []float64) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// WAV 헤더 작성
+	numSamples := len(samples)
+	header := WAVHeader{
+		ChunkID:       [4]byte{'R', 'I', 'F', 'F'},
+		ChunkSize:     36 + uint32(numSamples*2),
+		Format:        [4]byte{'W', 'A', 'V', 'E'},
+		Subchunk1ID:   [4]byte{'f', 'm', 't', ' '},
+		Subchunk1Size: 16,
+		AudioFormat:   1,
+		NumChannels:   1,
+		SampleRate:    uint32(sampleRate),
+		ByteRate:      uint32(sampleRate * 2),
+		BlockAlign:    2,
+		BitsPerSample: 16,
+		Subchunk2ID:   [4]byte{'d', 'a', 't', 'a'},
+		Subchunk2Size: uint32(numSamples * 2),
+	}
+
+	// 헤더 저장
+	err = binary.Write(file, binary.LittleEndian, &header)
+	if err != nil {
+		return err
+	}
+
+	// 샘플 데이터 저장
+	for _, sample := range samples {
+		intSample := int16(sample * math.MaxInt16)
+		err = binary.Write(file, binary.LittleEndian, intSample)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// WAV 파일에서 PCM 샘플 읽기
+func readWAVFile(filePath string) ([]float64, int, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+
+	var header WAVHeader
+	err = binary.Read(file, binary.LittleEndian, &header)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// PCM 데이터 읽기
+	var samples []float64
+	for {
+		var intSample int16
+		err = binary.Read(file, binary.LittleEndian, &intSample)
+		if err != nil {
+			break
+		}
+		samples = append(samples, float64(intSample)/math.MaxInt16)
+	}
+
+	return samples, int(header.SampleRate), nil
+}
+
+// PCM 샘플을 8PSK 심볼로 디코딩
+func samplesToSymbols(samples []float64, sampleRate int, toneFrequency float64, duration float64) []complex128 {
+	samplesPerSymbol := int(float64(sampleRate) * duration)
+	var symbols []complex128
+
+	for i := 0; i < len(samples); i += samplesPerSymbol {
+		var sum complex128
+		for j := 0; j < samplesPerSymbol && i+j < len(samples); j++ {
+			t := float64(j) / float64(sampleRate)
+			sum += complex(samples[i+j], 0) * cmplx.Exp(complex(0, -2*math.Pi*toneFrequency*t))
+		}
+		symbols = append(symbols, sum)
+	}
+
+	return symbols
+}
+
+// 8PSK 심볼을 바이너리 데이터로 변환
+func symbolsToBinary(symbols []complex128) []byte {
+	var data []byte
 	var currentByte byte
 	var bitCount int
 
-	for _, symbol := range encoded {
-		// 가장 가까운 심볼 찾기
-		closestIdx := 0
-		minDist := math.MaxFloat64
-		for i, ref := range symbolTable {
-			dist := cmplx.Abs(symbol - ref)
+	for _, symbol := range symbols {
+		closest := 0
+		minDist := cmplx.Abs(symbol - phaseTable[0])
+		for i := 1; i < len(phaseTable); i++ {
+			dist := cmplx.Abs(symbol - phaseTable[i])
 			if dist < minDist {
+				closest = i
 				minDist = dist
-				closestIdx = i
 			}
 		}
 
-		// 3비트 추가
-		currentByte = (currentByte << 3) | byte(closestIdx)
+		currentByte = (currentByte << 3) | byte(closest)
 		bitCount += 3
-
-		// 8비트가 채워지면 저장
 		if bitCount >= 8 {
-			decoded = append(decoded, currentByte)
+			data = append(data, currentByte)
 			currentByte = 0
 			bitCount = 0
 		}
 	}
 
-	return decoded
-}
-
-// Hamming Code (7,4) 인코딩
-func hammingEncode(input byte) byte {
-	d0 := (input >> 3) & 1
-	d1 := (input >> 2) & 1
-	d2 := (input >> 1) & 1
-	d3 := input & 1
-
-	p0 := d0 ^ d1 ^ d3
-	p1 := d0 ^ d2 ^ d3
-	p2 := d1 ^ d2 ^ d3
-
-	return (p0 << 6) | (p1 << 5) | (p2 << 4) | (d0 << 3) | (d1 << 2) | (d2 << 1) | d3
-}
-
-// Hamming Code (7,4) 디코딩 및 오류 수정
-func hammingDecode(encoded byte) (byte, bool) {
-	d0 := (encoded >> 3) & 1
-	d1 := (encoded >> 2) & 1
-	d2 := (encoded >> 1) & 1
-	d3 := encoded & 1
-
-	p0 := (encoded >> 6) & 1
-	p1 := (encoded >> 5) & 1
-	p2 := (encoded >> 4) & 1
-
-	s0 := p0 ^ d0 ^ d1 ^ d3
-	s1 := p1 ^ d0 ^ d2 ^ d3
-	s2 := p2 ^ d1 ^ d2 ^ d3
-
-	syndrome := (s0 << 2) | (s1 << 1) | s2
-
-	if syndrome != 0 {
-		errorPosition := 7 - syndrome // 오류 위치 계산
-		encoded ^= 1 << errorPosition
-	}
-
-	return (d0 << 3) | (d1 << 2) | (d2 << 1) | d3, syndrome != 0
-}
-
-// 스트림 방식으로 파일 인코딩
-func encodeFile(inputPath, outputPath string) error {
-	inputFile, err := os.Open(inputPath)
-	if err != nil {
-		return fmt.Errorf("입력 파일 열기 실패: %v", err)
-	}
-	defer inputFile.Close()
-
-	outputFile, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("출력 파일 생성 실패: %v", err)
-	}
-	defer outputFile.Close()
-
-	reader := bufio.NewReader(inputFile)
-	writer := bufio.NewWriter(outputFile)
-
-	buffer := make([]byte, 1024)
-	for {
-		n, err := reader.Read(buffer)
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("파일 읽기 실패: %v", err)
-		}
-		if n == 0 {
-			break
-		}
-
-		// Hamming Code 인코딩
-		for i := 0; i < n; i++ {
-			buffer[i] = hammingEncode(buffer[i])
-		}
-
-		// 8PSK 인코딩
-		encoded := encode8PSK(buffer[:n])
-
-		// 복소수를 바이트 스트림으로 변환
-		for _, sym := range encoded {
-			_, err := writer.Write([]byte(fmt.Sprintf("%f,%f\n", real(sym), imag(sym))))
-			if err != nil {
-				return fmt.Errorf("파일 쓰기 실패: %v", err)
-			}
-		}
-	}
-
-	writer.Flush()
-	return nil
-}
-
-// 스트림 방식으로 파일 디코딩
-func decodeFile(inputPath, outputPath string) error {
-	inputFile, err := os.Open(inputPath)
-	if err != nil {
-		return fmt.Errorf("입력 파일 열기 실패: %v", err)
-	}
-	defer inputFile.Close()
-
-	outputFile, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("출력 파일 생성 실패: %v", err)
-	}
-	defer outputFile.Close()
-
-	reader := bufio.NewReader(inputFile)
-	writer := bufio.NewWriter(outputFile)
-
-	var encoded []complex128
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("파일 읽기 실패: %v", err)
-		}
-		if len(line) == 0 {
-			break
-		}
-
-		var re, im float64
-		_, err = fmt.Sscanf(string(line), "%f,%f", &re, &im)
-		if err != nil {
-			return fmt.Errorf("데이터 파싱 실패: %v", err)
-		}
-		encoded = append(encoded, complex(re, im))
-	}
-
-	// 8PSK 디코딩
-	decoded := decode8PSK(encoded)
-
-	// Hamming Code 디코딩 및 오류 수정
-	for i := 0; i < len(decoded); i++ {
-		decoded[i], _ = hammingDecode(decoded[i])
-	}
-
-	// 디코딩된 데이터를 파일로 저장
-	_, err = writer.Write(decoded)
-	if err != nil {
-		return fmt.Errorf("파일 쓰기 실패: %v", err)
-	}
-
-	writer.Flush()
-	return nil
+	return data
 }
 
 func main() {
-	// 파일 경로 설정
-	inputFile := "input.txt"
-	encodedFile := "encoded.txt"
-	decodedFile := "decoded.txt"
+	inputFile := "input.bin"
+	outputWAV := "output.wav"
+	decodedFile := "decoded.bin"
 
-	// 인코딩
-	err := encodeFile(inputFile, encodedFile)
+	// 1. 바이너리 파일 읽기
+	file, err := os.Open(inputFile)
 	if err != nil {
-		log.Fatalf("인코딩 실패: %v", err)
+		log.Fatalf("파일 열기 실패: %v", err)
 	}
-	fmt.Println("인코딩 완료:", encodedFile)
+	defer file.Close()
+	reader := bufio.NewReader(file)
 
-	// 디코딩
-	err = decodeFile(encodedFile, decodedFile)
-	if err != nil {
-		log.Fatalf("디코딩 실패: %v", err)
+	// 스트리밍 방식으로 처리
+	var symbols []complex128
+	buffer := make([]byte, 1024)
+	for {
+		n, err := reader.Read(buffer)
+		if n == 0 {
+			break
+		}
+		symbols = append(symbols, binaryToSymbols(buffer[:n])...)
+		if err != nil {
+			break
+		}
 	}
-	fmt.Println("디코딩 완료:", decodedFile)
+
+	// 2. 심볼 -> WAV 샘플 생성
+	sampleRate := 44100
+	toneFrequency := 1000.0
+	duration := 0.01
+	samples := symbolsToSamples(symbols, sampleRate, toneFrequency, duration)
+
+	// 3. WAV 파일 생성
+	err = createWAVFile(outputWAV, sampleRate, samples)
+	if err != nil {
+		log.Fatalf("WAV 파일 생성 실패: %v", err)
+	}
+
+	// 4. WAV 파일 읽기 및 디코딩
+	readSamples, _, err := readWAVFile(outputWAV)
+	if err != nil {
+		log.Fatalf("WAV 파일 읽기 실패: %v", err)
+	}
+	decodedSymbols := samplesToSymbols(readSamples, sampleRate, toneFrequency, duration)
+	decodedData := symbolsToBinary(decodedSymbols)
+
+	// 5. 디코딩된 바이너리 파일 저장
+	outFile, err := os.Create(decodedFile)
+	if err != nil {
+		log.Fatalf("파일 생성 실패: %v", err)
+	}
+	defer outFile.Close()
+	outFile.Write(decodedData)
+
+	log.Println("인코딩 및 디코딩 완료.")
 }
