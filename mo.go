@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -68,6 +67,45 @@ func decode8PSK(encoded []complex128) []byte {
 	return decoded
 }
 
+// Hamming Code (7,4) 인코딩
+func hammingEncode(input byte) byte {
+	d0 := (input >> 3) & 1
+	d1 := (input >> 2) & 1
+	d2 := (input >> 1) & 1
+	d3 := input & 1
+
+	p0 := d0 ^ d1 ^ d3
+	p1 := d0 ^ d2 ^ d3
+	p2 := d1 ^ d2 ^ d3
+
+	return (p0 << 6) | (p1 << 5) | (p2 << 4) | (d0 << 3) | (d1 << 2) | (d2 << 1) | d3
+}
+
+// Hamming Code (7,4) 디코딩 및 오류 수정
+func hammingDecode(encoded byte) (byte, bool) {
+	d0 := (encoded >> 3) & 1
+	d1 := (encoded >> 2) & 1
+	d2 := (encoded >> 1) & 1
+	d3 := encoded & 1
+
+	p0 := (encoded >> 6) & 1
+	p1 := (encoded >> 5) & 1
+	p2 := (encoded >> 4) & 1
+
+	s0 := p0 ^ d0 ^ d1 ^ d3
+	s1 := p1 ^ d0 ^ d2 ^ d3
+	s2 := p2 ^ d1 ^ d2 ^ d3
+
+	syndrome := (s0 << 2) | (s1 << 1) | s2
+
+	if syndrome != 0 {
+		errorPosition := 7 - syndrome // 오류 위치 계산
+		encoded ^= 1 << errorPosition
+	}
+
+	return (d0 << 3) | (d1 << 2) | (d2 << 1) | d3, syndrome != 0
+}
+
 // 스트림 방식으로 파일 인코딩
 func encodeFile(inputPath, outputPath string) error {
 	inputFile, err := os.Open(inputPath)
@@ -95,7 +133,12 @@ func encodeFile(inputPath, outputPath string) error {
 			break
 		}
 
-		// 인코딩
+		// Hamming Code 인코딩
+		for i := 0; i < n; i++ {
+			buffer[i] = hammingEncode(buffer[i])
+		}
+
+		// 8PSK 인코딩
 		encoded := encode8PSK(buffer[:n])
 
 		// 복소수를 바이트 스트림으로 변환
@@ -146,8 +189,13 @@ func decodeFile(inputPath, outputPath string) error {
 		encoded = append(encoded, complex(re, im))
 	}
 
-	// 디코딩
+	// 8PSK 디코딩
 	decoded := decode8PSK(encoded)
+
+	// Hamming Code 디코딩 및 오류 수정
+	for i := 0; i < len(decoded); i++ {
+		decoded[i], _ = hammingDecode(decoded[i])
+	}
 
 	// 디코딩된 데이터를 파일로 저장
 	_, err = writer.Write(decoded)
