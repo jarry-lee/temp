@@ -1,35 +1,38 @@
 package main
 
 import (
-    "github.com/AllenDang/giu"
-    "github.com/AllenDang/giu/imgui"
-    "image/color"
-    "time"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
+	"image/color"
+	"time"
 )
 
-var brightness int
-
-func loop() {
-    // 밝기 조정
-    brightness = (brightness + 1) % 256
-    rgba := uint8(brightness)
-
-    // 창에 그릴 내용 설정
-    g := giu.NewMasterWindow("Brightness Square", 400, 400, 0)
-    g.Run(func() {
-        giu.SingleWindow().Layout(
-            giu.Custom(func() {
-                imgui.GetWindowDrawList().AddRectFilled(
-                    imgui.Vec2{X: 50, Y: 50},
-                    imgui.Vec2{X: 350, Y: 350},
-                    imgui.ColorConvertRGBAToVec4(color.RGBA{R: rgba, G: rgba, B: rgba, A: 255}),
-                )
-            }),
-        )
-    })
-}
-
 func main() {
-    // 60 FPS로 실행
-    giu.NewMasterWindow("Brightness Demo", 400, 400, giu.MasterWindowFlagsNotResizable).Run(loop)
+	// 애플리케이션 생성
+	myApp := app.New()
+	myWindow := myApp.NewWindow("Brightness Square")
+	myWindow.Resize(fyne.NewSize(400, 400))
+
+	// 밝기 초기값 설정
+	brightness := 0
+
+	// 정사각형 생성
+	rect := canvas.NewRectangle(color.RGBA{R: 0, G: 0, B: 0, A: 255})
+	rect.SetMinSize(fyne.NewSize(400, 400))
+
+	// 타이머를 이용해 밝기 업데이트
+	go func() {
+		for {
+			time.Sleep(30 * time.Millisecond) // 30ms 간격으로 밝기 변화
+			brightness = (brightness + 1) % 256
+			rgba := uint8(brightness)
+			rect.FillColor = color.RGBA{R: rgba, G: rgba, B: rgba, A: 255}
+			canvas.Refresh(rect) // 색상 업데이트
+		}
+	}()
+
+	// 창에 정사각형 추가 및 실행
+	myWindow.SetContent(rect)
+	myWindow.ShowAndRun()
 }
