@@ -88,22 +88,79 @@ def build_wscn_rgb_1024(input_shape=(1024, 1024, 3)):
     model = models.Model(inputs=inputs, outputs=outputs, name="WSCN_RGB_1024_Segmentation")
     return model
 
+import os
+import glob
+import cv2
+
+# -------------------------------------------------------------------------
+# A. 데이터셋 로드 함수
+# -------------------------------------------------------------------------
+def load_dataset(image_dir, mask_dir, input_shape):
+    """
+    이미지와 마스크를 로드하고 전처리합니다.
+    Args:
+        image_dir: 학습 이미지가 있는 디렉토리 경로
+        mask_dir: 마스크 이미지가 있는 디렉토리 경로 (파일명이 이미지와 동일해야 함)
+        input_shape: 모델 입력 크기 (height, width, channels)
+    Returns:
+        X: 전처리된 이미지 배열 (N, H, W, 3)
+        Y: 전처리된 마스크 배열 (N, H, W, 1)
+    """
+    image_paths = sorted(glob.glob(os.path.join(image_dir, '*')))
+    mask_paths = sorted(glob.glob(os.path.join(mask_dir, '*')))
+
+    images = []
+    masks = []
+
+    print(f"이미지 {len(image_paths)}개, 마스크 {len(mask_paths)}개를 발견했습니다.")
+
+    for img_path, mask_path in zip(image_paths, mask_paths):
+        # 이미지 로드 및 전처리
+        img = cv2.imread(img_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (input_shape[1], input_shape[0]))
+        img = img.astype(np.float32) / 255.0
+        images.append(img)
+
+        # 마스크 로드 및 전처리
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        mask = cv2.resize(mask, (input_shape[1], input_shape[0]))
+        mask = np.expand_dims(mask, axis=-1)
+        mask = mask.astype(np.float32) / 255.0
+        mask = (mask > 0.5).astype(np.float32) # 이진화
+        masks.append(mask)
+
+    return np.array(images), np.array(masks)
+
 # -------------------------------------------------------------------------
 # 3. 메인 실행 블록
 # -------------------------------------------------------------------------
 if __name__ == "__main__":
-    # A. 모델 생성
-    print("1. 모델을 생성하는 중...")
-    input_shape = (1024, 1024, 3) 
+    # A. 데이터 로드
+    print("1. 데이터셋 로드 중...")
+    input_shape = (1024, 1024, 3)
+    dataset_dir = 'dataset'
+    image_dir = os.path.join(dataset_dir, 'images')
+    mask_dir = os.path.join(dataset_dir, 'masks')
+    
+    # 데이터가 없는 경우를 대비한 예외 처리
+    if not os.path.exists(image_dir) or not os.path.exists(mask_dir):
+        print(f"오류: {image_dir} 또는 {mask_dir} 디렉토리가 존재하지 않습니다.")
+        exit(1)
+
+    X_train, Y_train = load_dataset(image_dir, mask_dir, input_shape)
+    
+    if len(X_train) == 0:
+        print("오류: 데이터셋이 비어있습니다.")
+        exit(1)
+
+    print(f"학습 데이터 형상: X={X_train.shape}, Y={Y_train.shape}")
+
+    # B. 모델 생성
+    print("\n2. 모델을 생성하는 중...")
     model = build_wscn_rgb_1024(input_shape)
     
     model.compile(optimizer='adam', loss=bce_dice_loss, metrics=[dice_coefficient, 'accuracy'])
-
-    # B. 더미 데이터 생성 (시뮬레이션용)
-    print("\n2. 학습용 더미 데이터 생성 중...")
-    num_samples = 5
-    X_train = np.random.rand(num_samples, 1024, 1024, 3).astype(np.float32)
-    Y_train = np.random.randint(0, 2, size=(num_samples, 1024, 1024, 1)).astype(np.float32)
 
     # C. 모델 학습
     print("\n3. 모델 학습 시작...")
@@ -138,6 +195,5 @@ if __name__ == "__main__":
     plt.axis('off')
 
     plt.tight_layout()
-    plt.show()
-    
-    print("\n[완료] 모델 수정 및 시각화가 정상적으로 종료되었습니다.")
+    plt.savefig('result_visualization.png') # 결과 이미지 저장
+    print("\n[완료] 모델 학습 및 시각화 결과가 'result_visualization.png'로 저장되었습니다.")
