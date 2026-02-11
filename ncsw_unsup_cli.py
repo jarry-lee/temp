@@ -305,6 +305,19 @@ def inference(args):
     np.save(args.output, embeddings)
     print(f"Embeddings saved to {args.output}")
 
+    # Save as Image
+    # Normalize to 0-255
+    norm_embeddings = (embeddings - np.min(embeddings)) / (np.max(embeddings) - np.min(embeddings) + 1e-8)
+    norm_embeddings = (norm_embeddings * 255).astype(np.uint8)
+    
+    # Save image
+    output_image_path = os.path.splitext(args.output)[0] + '.png'
+    # Embeddings are (N, D). To save as image, we might want to resize or just save as is.
+    # If D is small (e.g., 64), it might be too thin. Let's replicate rows for better visibility if N is small.
+    # For now, just save raw (N, D).
+    cv2.imwrite(output_image_path, norm_embeddings)
+    print(f"Embeddings image saved to {output_image_path}")
+
 def main():
     parser = argparse.ArgumentParser(description="WSCN Unsupervised Pre-training CLI")
     parser.add_argument('--mode', type=str, required=True, choices=['train', 'inference'], help='Mode: train or inference')
